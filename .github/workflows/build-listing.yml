@@ -1,0 +1,69 @@
+# Builds the VCC (VPM) listing from the GitHub releases of every repository in listing.json and publishes
+# it with GitHub Pages as index.json, next to a small page with an "Add to VCC" link. A release counts when
+# it is published (not a draft or prerelease) and has a package.json asset whose "url" points at the
+# package zip, which is what each package repository's release workflow uploads. Runs on push, by hand,
+# and every six hours so new releases appear without extra setup.
+name: Build listing
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build index.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api() { curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$1"; }
+          packages='{}'
+          for repo in $(jq -r '.repos[]' listing.json); do
+            page=1
+            while :; do
+              releases=$(api "https://api.github.com/repos/$repo/releases?per_page=100&page=$page") ||
+                { echo "::warning::Cannot read releases of $repo (missing or private); skipped."; break; }
+              [ "$(jq length <<<"$releases")" -eq 0 ] && break
+              while read -r release; do
+                manifest_url=$(jq -r '[.assets[] | select(.name == "package.json")][0].browser_download_url // empty' <<<"$release")
+                [ -z "$manifest_url" ] && continue
+                manifest=$(curl -fsSL "$manifest_url")
+                zip_url=$(jq -r '.url // empty' <<<"$manifest")
+                [ -z "$zip_url" ] && { echo "Skipping $repo $(jq -r .tag_name <<<"$release"): package.json has no url"; continue; }
+                sha=$(curl -fsSL "$zip_url" | sha256sum | cut -d' ' -f1)
+                manifest=$(jq --arg sha "$sha" '.zipSHA256 = $sha' <<<"$manifest")
+                packages=$(jq --argjson m "$manifest" '.[$m.name].versions[$m.version] = $m' <<<"$packages")
+              done < <(jq -c '.[] | select((.draft or .prerelease) | not)' <<<"$releases")
+              page=$((page + 1))
+            done
+          done
+          mkdir -p site
+          jq --argjson packages "$packages" '{name, id, url, author, packages: $packages}' listing.json > site/index.json
+          cp index.html site/index.html
+          jq '.packages | map_values(.versions | keys)' site/index.json
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

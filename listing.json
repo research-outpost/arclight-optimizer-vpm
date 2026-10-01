@@ -1,0 +1,9 @@
+{
+  "name": "Arclight",
+  "id": "research-outpost.arclight-optimizer-vpm",
+  "url": "https://research-outpost.github.io/arclight-optimizer-vpm/index.json",
+  "author": "Okarin",
+  "repos": [
+    "research-outpost/arclight-optimizer"
+  ]
+}
